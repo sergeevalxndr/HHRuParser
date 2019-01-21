@@ -1,3 +1,7 @@
+"""
+Contains the classes of the main entities of the forum.
+"""
+
 class Message:
     def __init__(self, message_id="", topic_id="", user_id="", user_name="", date="", content="", url=""):
         self.message_id = message_id

@@ -63,27 +63,29 @@ def runtime_async(func):
 
 
 class HHRuParser:
-    current_session: None
-    first_launch: bool
-
     def __init__(self):
         self.domain = config.parser_settings["domain"]
         self.user = "Non Authorised"
         self.cookies = None
         self.regexp = {
-            "pt_pagescount": re.compile("index(\d+)"),
-            "pt_topic404": re.compile("(Тема не указана)|(Не указана Тема)"),
+            "pt_pagescount": re.compile(r"index(\d+)"),
+            "pt_topic404": re.compile(r"(Тема не указана)|(Не указана Тема)"),
 
-            "pm_userid": re.compile("id(\d+)"),
-            "pm_topicid": re.compile("-(\d+)/"),
-            "pm_date": re.compile("(\d{1,2}) (\w+) (\d{4}).? ?(\d{2})?:?(\d{2})?"),
-            "pm_messageid": re.compile("post(\d+)"),
+            "pm_userid": re.compile(r"id(\d+)"),
+            "pm_topicid": re.compile(r"-(\d+)/"),
+            "pm_date": re.compile(r"(\d{1,2}) " # Year
+                                  r"(\w+) " # Month
+                                  r"(\d{4}).? " # Day
+                                  r"?(\d{2})?:?(\d{2})?" # Time, if present (hh:mm)
+                                  ),
+            "pm_messageid": re.compile(r"post(\d+)"),
         }
 
     @runtime_async
     async def fetch(self, url):
         """
-        This function requests the given URL and returns it in a form of lxml.html.HtmlElement object
+        This function requests the given URL and returns it
+        in a form of lxml.html.HtmlElement object
         :param url: String, containing url to fetch
         :return: HtmlElement
         """
@@ -108,12 +110,13 @@ class HHRuParser:
         }
         # TODO Тут сделать прокси
 
-        return requests.post(f"https://www.{self.domain}/forum/login.php", data=params)
+        return requests.post(f"https://www.{self.domain}/forum/login.php",
+                             data=params)
 
     def _auth_response_process(self, auth_response):
         if re.search("предел попыток входа", auth_response.text):
             raise ErrorAuthLimit()
-        elif re.search("register\.php|login\.php", auth_response.text):
+        elif re.search(r"register\.php|login\.php", auth_response.text):
             raise ErrorAuthDataWrong()
         elif re.search(config.forum_account["username"], auth_response.text):
             self.cookies = auth_response.cookies
@@ -140,7 +143,8 @@ class HHRuParser:
         page = HTML.document_fromstring(page)
 
         # TODO Определить, существует тема или нет
-        topic_error = page.xpath('.//table[contains(@class, "tborder") and contains(@width, "70%")]')
+        topic_error = page.xpath('.//table[contains(@class, "tborder") and '
+                                 'contains(@width, "70%")]')
         # topic_error = re.search("<p>Не указана Тема. ", page)
         # page = HTML.document_fromstring(page)
 
@@ -148,7 +152,8 @@ class HHRuParser:
             last_page_url = page.find_class("pages")
             if last_page_url:
                 last_page_url = last_page_url.pop()[-1].attrib["href"]
-                pages_count = int(self.regexp["pt_pagescount"].search(last_page_url).group(1))
+                pages_count = int(self.regexp["pt_pagescount"]
+                                  .search(last_page_url).group(1))
             else:
                 pages_count = 0
 
@@ -156,7 +161,8 @@ class HHRuParser:
             print("Current topic name: " + topic_name)
 
             messages = page.find_class("post_wrap_div")
-            tasks = [asyncio.create_task(self.parse_message(msg, current_topic)) for msg in messages]
+            tasks = [asyncio.create_task(
+                self.parse_message(msg, current_topic)) for msg in messages]
             await asyncio.wait(tasks)
             messages = []
             for task in tasks:
@@ -177,9 +183,11 @@ class HHRuParser:
             page_status = self.regexp["pt_topic404"].search(topic_error_text)
 
             if page_status.group(1):
-                topic_keywords = "DEL/HID: " + page.xpath("head/meta[contains(@name, 'keywords')]")[0].attrib["content"]
+                topic_keywords = "DEL/HID: " + page.xpath(
+                    "head/meta[contains(@name, 'keywords')]")[0].attrib["content"]
                 print(f"Тема удалена или скрыта. Возможное название темы: {topic_keywords}")
-                return HHRuStorage.Topic(current_topic, topic_keywords, list(), topic_url)
+                return HHRuStorage.Topic(current_topic, topic_keywords,
+                                         list(), topic_url)
             elif page_status.group(2):
                 print(f"Тема еще не создана")
                 return None
@@ -196,23 +204,35 @@ class HHRuParser:
         """
 
         page = HTML.document_fromstring(
-            await self.fetch(f"https://www.{self.domain}/forum/showthread.php?t={topic_id}&page={topic_page}"))
+            await self.fetch(f"https://www.{self.domain}/forum/"
+                             f"showthread.php?t={topic_id}&page={topic_page}"))
+
         messages = page.find_class("post_wrap_div")
         tasks = [asyncio.create_task(self.parse_message(msg, topic_id)) for msg in messages]
         await asyncio.wait(tasks)
+
         messages = []
         for task in tasks:
             messages.append(task.result())
+
         return messages
 
     def _get_date(self, date):
+        """
+        :param date: string containing date in a specified format
+        :return: datetime.datetime or datetime.date object
+        """
         date = self.regexp["pm_date"].search(date)
         if date.group(4) and date.group(5):
-            return datetime.datetime(int(date.group(3)), HHRuStorage.months_strtoint[date.group(2)], int(date.group(1)),
-                                     int(date.group(4)), int(date.group(5)),
+            return datetime.datetime(int(date.group(3)), # Year
+                                     HHRuStorage.months_strtoint[date.group(2)], # Month
+                                     int(date.group(1)), # Day
+                                     int(date.group(4)), int(date.group(5)), # Time (hh:mm)
                                      tzinfo=datetime.timezone(datetime.timedelta(hours=3)))
         else:
-            return datetime.date(int(date.group(3)), HHRuStorage.months_strtoint[date.group(2)], int(date.group(1)))
+            return datetime.date(int(date.group(3)), # Year
+                                 HHRuStorage.months_strtoint[date.group(2)], # Month
+                                 int(date.group(1))) # Day
 
     async def parse_message(self, msg, topic_id=0):
         """
@@ -226,7 +246,8 @@ class HHRuParser:
         try:
             if username_block.getchildren():
                 user_name = username_block[0].text_content().strip()
-                user_id = int(self.regexp["pm_userid"].search(username_block[0].attrib['href']).group(1))
+                user_id = int(self.regexp["pm_userid"].search(
+                    username_block[0].attrib['href']).group(1))
             else:
                 user_name = username_block.text_content().strip()
                 user_id = 0
@@ -235,7 +256,9 @@ class HHRuParser:
             user_id = 0
         try:
             if not topic_id:
-                topic_block = msg.xpath(".//a[contains('title', 'Прямая Ссылка')]").attrib["href"].text_content()
+                topic_block = msg.xpath(
+                    ".//a[contains('title', 'Прямая Ссылка')]"
+                ).attrib["href"].text_content()
                 topic_id = int(self.regexp["pm_topicid"].search(topic_block).group(1))
         except AttributeError:
             print(topic_id)
@@ -251,16 +274,19 @@ class HHRuParser:
         post_url = message_block.xpath('.//td/a')[-1].attrib['href']
         message_id = int(self.regexp["pm_messageid"].search(post_url).group(1))
 
-        return HHRuStorage.Message(message_id, topic_id, user_id, user_name, date, message_text, post_url)
+        return HHRuStorage.Message(message_id, topic_id, user_id,
+                                   user_name, date, message_text, post_url)
 
     @runtime_async
     async def parse_user(self, user_id):
         """
-        This method requests a page with user information on given user id's and returns a HHRuStorage.User object
+        This method requests a page with user information on given user id's
+        and returns a HHRuStorage.User object
         :param user_id: Id of processing user
-        :return: HHRuStorage.User
+        :return: HHRuStorage.User object
         """
-        page = HTML.document_fromstring(await self.fetch(f"https://www.{self.domain}/forum/id{user_id}-user"))
+        page = HTML.document_fromstring(
+            await self.fetch(f"https://www.{self.domain}/forum/id{user_id}-user"))
         usernames = [page.xpath("head/meta[@name='keywords']/@content").pop().split(',')[0]]
         page = page.find_class("profile").pop()
         username_history = page.find_class("username_history")
